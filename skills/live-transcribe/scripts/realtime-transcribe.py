@@ -10,15 +10,35 @@ import base64
 import json
 import os
 import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
+from threading import Thread
 
 import numpy as np
 import sounddevice as sd
 import websockets
 from rapidfuzz import fuzz
+
+try:
+    from playsound import playsound as _playsound
+    def _play(path: str, wait: bool):
+        if wait:
+            _playsound(path)
+        else:
+            Thread(target=_playsound, args=(path,), daemon=True).start()
+except ImportError:
+    import subprocess, platform
+    def _play(path: str, wait: bool):
+        if platform.system() == "Darwin":
+            cmd = ["afplay", path]
+        elif platform.system() == "Windows":
+            cmd = ["powershell", "-c", f"(New-Object Media.SoundPlayer '{path}').PlaySync()"]
+        else:
+            cmd = ["aplay", path]
+        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if wait:
+            p.wait()
 
 API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 WS_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime"
@@ -37,26 +57,20 @@ STOP_PHRASES = [
     "ok stop transcribing",
 ]
 FUZZY_THRESHOLD = 82
-PID_FILE = Path("/tmp/realtime-transcribe.pid")
-STOP_FILE = Path("/tmp/realtime-transcribe.stop")
+_TMP = Path(os.environ.get("TEMP", "/tmp"))
+PID_FILE = _TMP / "realtime-transcribe.pid"
+STOP_FILE = _TMP / "realtime-transcribe.stop"
 
 
 def play_sound(name: str, wait: bool = False):
-    """Play a pre-recorded audio cue. wait=True blocks until playback finishes."""
     sound_file = SOUNDS_DIR / f"{name}.mp3"
     if sound_file.exists():
-        p = subprocess.Popen(
-            ["afplay", str(sound_file)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        if wait:
-            p.wait()
+        _play(str(sound_file), wait)
 
 
 def get_output_path() -> Path:
     ts = time.strftime("%Y%m%d-%H%M%S")
-    return Path(f"/tmp/transcribe-{ts}.txt")
+    return _TMP / f"transcribe-{ts}.txt"
 
 
 def write_pid():
